@@ -25,6 +25,7 @@ target/
 .vscode/
 logs/
 *.log
+.env
 
 # OS files
 .DS_Store
