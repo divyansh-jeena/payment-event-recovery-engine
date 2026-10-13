@@ -1,5 +1,5 @@
-package com.example.paymenteventrecoveryengine.Service;
 
+package com.example.paymenteventrecoveryengine.Service;
 
 import com.example.paymenteventrecoveryengine.entity.PaymentEvent;
 import com.example.paymenteventrecoveryengine.enums.PaymentStatus;
@@ -12,44 +12,56 @@ import org.springframework.stereotype.Service;
 import java.time.LocalDateTime;
 import java.util.List;
 
-    @Service
-    @Slf4j
-    @RequiredArgsConstructor
-    public class RetryScheduler {
+@Service
+@Slf4j
+@RequiredArgsConstructor
+public class RetryScheduler {
 
-        private final PaymentRepository paymentRepository;
-        private final DeliveryService deliveryService;
+    private final PaymentRepository paymentRepository;
+    private final PaymentClaimService paymentClaimService;
+    private final DeliveryService deliveryService;
 
-        @Scheduled(cron = "0 * * * * *")
-        public void retryFailedPayments() {
+    @Scheduled(cron = "0 * * * * *")
+    public void retryFailedPayments() {
 
-            log.info("Retry Scheduler started.");
+        log.info("Retry Scheduler started.");
 
-            LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now();
 
-            List<PaymentEvent> payments =
-                    paymentRepository.findByStatusAndNextRetryAtLessThanEqual(
-                            PaymentStatus.FAILED,
-                            now
+        List<PaymentEvent> payments =
+                paymentRepository.findByStatusAndNextRetryAtLessThanEqual(
+                        PaymentStatus.FAILED,
+                        now
+                );
+
+        log.info("{} payment(s) ready for retry.", payments.size());
+
+        for (PaymentEvent payment : payments) {
+            try {
+                boolean claimed = paymentClaimService.claim(
+                        payment.getId(),
+                        PaymentStatus.FAILED
+                );
+
+                if (!claimed) {
+                    log.info(
+                            "Skipping payment {}; it is no longer eligible.",
+                            payment.getPaymentId()
                     );
-
-            log.info("{} payment(s) ready for retry.", payments.size());
-
-            for (PaymentEvent payment : payments) {
-                try {
-                    log.info("Retrying payment {}", payment.getPaymentId());
-                    deliveryService.deliver(payment);
-                } catch (Exception ex) {
-                    log.error(
-                            "Retry failed for payment {}",
-                            payment.getPaymentId(),
-                            ex
-                    );
+                    continue;
                 }
-            }
 
-            log.info("Retry Scheduler completed.");
+                log.info("Retrying payment {}", payment.getPaymentId());
+
+                deliveryService.deliver(payment);
+
+            } catch (Exception ex) {
+                log.error(
+                        "Retry failed for payment {}",
+                        payment.getPaymentId(),
+                        ex
+                );
+            }
         }
     }
-
-
+}

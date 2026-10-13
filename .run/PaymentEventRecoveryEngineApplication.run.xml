@@ -1,0 +1,14 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="PaymentEventRecoveryEngineApplication" type="SpringBootApplicationConfigurationType" factoryName="Spring Boot" nameIsGenerated="true">
+    <envs>
+      <env name="DB_PASSWORD" value="Djjeena@1234" />
+      <env name="DB_USERNAME" value="postgres" />
+      <env name="DB_URL" value="jdbc:postgresql://localhost:5432/PaymentRecovery" />
+    </envs>
+    <module name="Payment-Event-Recovery-Engine" />
+    <option name="SPRING_BOOT_MAIN_CLASS" value="com.example.paymenteventrecoveryengine.PaymentEventRecoveryEngineApplication" />
+    <method v="2">
+      <option name="Make" enabled="true" />
+    </method>
+  </configuration>
+</component>
