@@ -27,13 +27,15 @@ public class PaymentService {
      private  final AuditLogRepository auditLogRepository;
      private final DeliveryService deliveryService;
      private final AuditService auditService;
+    private final PaymentClaimService paymentClaimService;
 
 
-    public PaymentService(PaymentRepository paymentRepository, AuditLogRepository auditLogRepository, DeliveryService deliveryService, AuditService auditService) {
+    public PaymentService(PaymentRepository paymentRepository, AuditLogRepository auditLogRepository, DeliveryService deliveryService, AuditService auditService, PaymentClaimService paymentClaimService) {
         this.paymentRepository = paymentRepository;
         this.auditLogRepository = auditLogRepository;
         this.deliveryService = deliveryService;
         this.auditService = auditService;
+        this.paymentClaimService = paymentClaimService;
     }
 
     private PaymentEvent findPaymentOrThrow(String paymentId) {
@@ -108,35 +110,57 @@ public class PaymentService {
 
     }
 
+
     public void manualRetry(String paymentId) {
-
         log.info("Manual retry requested for payment {}", paymentId);
-         PaymentEvent paymentEvent= findPaymentOrThrow(paymentId);
-          if(paymentEvent.getStatus()==PaymentStatus.DEAD ||paymentEvent.getStatus()== PaymentStatus.FAILED){
 
-             auditService.createAuditLog(
-                      paymentId,
-                     AuditAction.MANUAL_RETRY_STARTED.name(),
-                      "Admin initiated manual retry."
-              );
-               if(paymentEvent.getStatus()==PaymentStatus.DEAD){
-                   paymentEvent.setStatus(PaymentStatus.FAILED);
-               }
-              deliveryService.deliver(paymentEvent);
-              log.info("Manual retry initiated for payment {}", paymentId);
+        PaymentEvent paymentEvent = findPaymentOrThrow(paymentId);
+        PaymentStatus currentStatus = paymentEvent.getStatus();
 
-          }
-          else{
-              log.warn(
-                      "Manual retry rejected for payment {} because status is {}",
-                      paymentId,
-                      paymentEvent.getStatus()
-              );
-              throw  new IllegalArgumentException("Manual retry is only allowed for FAILED or DEAD payments.");
+        if (currentStatus != PaymentStatus.FAILED
+                && currentStatus != PaymentStatus.DEAD) {
+            throw new IllegalArgumentException(
+                    "Manual retry is only allowed for FAILED or DEAD payments."
+            );
+        }
 
-          }
+        boolean claimed = paymentClaimService.claim(
+                paymentEvent.getId(),
+                currentStatus
+        );
 
+        if (!claimed) {
+            throw new IllegalStateException(
+                    "Payment is no longer eligible for retry or is already being processed."
+            );
+        }
 
+        // Reload after the atomic claim has committed.
+        paymentEvent = paymentRepository.findById(paymentEvent.getId())
+                .orElseThrow(() ->
+                        new IllegalStateException(
+                                "Payment disappeared after being claimed."
+                        )
+                );
+
+        if (currentStatus == PaymentStatus.DEAD) {
+            paymentEvent.setRetryCount(0);
+            paymentEvent.setFailureReason(null);
+            paymentEvent.setNextRetryAt(null);
+
+            // Persist the reset before delivery.
+            paymentRepository.saveAndFlush(paymentEvent);
+        }
+
+        auditService.createAuditLog(
+                paymentId,
+                AuditAction.MANUAL_RETRY_STARTED.name(),
+                "Admin initiated manual retry."
+        );
+
+        deliveryService.deliver(paymentEvent);
+
+        log.info("Manual retry initiated for payment {}", paymentId);
     }
 
     public Page<PaymentResponse> getDeadPayments(int page, int size) {
