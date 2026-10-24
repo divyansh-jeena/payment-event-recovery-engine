@@ -3,13 +3,12 @@ package com.example.paymenteventrecoveryengine.repository;
 
 import com.example.paymenteventrecoveryengine.entity.PaymentEvent;
 import com.example.paymenteventrecoveryengine.enums.PaymentStatus;
-
 import jakarta.persistence.EntityManager;
-
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
 import org.springframework.boot.data.jpa.test.autoconfigure.DataJpaTest;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -23,16 +22,14 @@ import static org.junit.jupiter.api.Assertions.*;
 )
 class PaymentRepositoryTest {
 
-
     @Autowired
     private PaymentRepository paymentRepository;
 
     @Autowired
     private EntityManager entityManager;
 
-
-
-
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
 
     private PaymentEvent createPayment(
             String paymentId,
@@ -52,12 +49,8 @@ class PaymentRepositoryTest {
         return payment;
     }
 
-
-    // Test 1: Only failed payments whose retry time has arrived
-    // should be returned.
     @Test
     void findDuePayments_returnsOnlyEligiblePayments() {
-
         LocalDateTime now = LocalDateTime.now();
 
         PaymentEvent duePayment = createPayment(
@@ -78,11 +71,9 @@ class PaymentRepositoryTest {
                 now.minusMinutes(2)
         );
 
-        paymentRepository.saveAll(
+        paymentRepository.saveAllAndFlush(
                 List.of(duePayment, futurePayment, deliveredPayment)
         );
-
-        paymentRepository.flush();
 
         List<PaymentEvent> result =
                 paymentRepository.findByStatusAndNextRetryAtLessThanEqual(
@@ -91,68 +82,58 @@ class PaymentRepositoryTest {
                 );
 
         assertEquals(1, result.size());
-        assertEquals(
-                "PAY-TEST-DUE",
-                result.get(0).getPaymentId()
-        );
+        assertEquals("PAY-TEST-DUE", result.get(0).getPaymentId());
     }
 
-
-    // Test 2: A failed payment can be claimed.
     @Test
     void claimPayment_whenStatusIsFailed_updatesStatusToProcessing() {
+        LocalDateTime now = LocalDateTime.now();
 
         PaymentEvent payment = createPayment(
                 "PAY-TEST-CLAIM",
                 PaymentStatus.FAILED,
-                LocalDateTime.now().minusMinutes(1)
+                now.minusMinutes(1)
         );
 
         payment = paymentRepository.saveAndFlush(payment);
-
         Long paymentId = payment.getId();
 
         int updatedRows = paymentRepository.claimPayment(
                 paymentId,
                 PaymentStatus.PROCESSING,
-                PaymentStatus.FAILED
+                PaymentStatus.FAILED,
+                now
         );
 
-        entityManager.flush();
         entityManager.clear();
 
         PaymentEvent updatedPayment =
                 paymentRepository.findById(paymentId).orElseThrow();
 
         assertEquals(1, updatedRows);
-        assertEquals(
-                PaymentStatus.PROCESSING,
-                updatedPayment.getStatus()
-        );
+        assertEquals(PaymentStatus.PROCESSING, updatedPayment.getStatus());
     }
 
-
-    // Test 3: A payment that is no longer FAILED cannot be claimed again.
     @Test
     void claimPayment_whenStatusIsNotFailed_updatesZeroRows() {
+        LocalDateTime now = LocalDateTime.now();
 
         PaymentEvent payment = createPayment(
                 "PAY-TEST-ALREADY-PROCESSING",
                 PaymentStatus.PROCESSING,
-                LocalDateTime.now().minusMinutes(1)
+                now.minusMinutes(1)
         );
 
         payment = paymentRepository.saveAndFlush(payment);
-
         Long paymentId = payment.getId();
 
         int updatedRows = paymentRepository.claimPayment(
                 paymentId,
                 PaymentStatus.PROCESSING,
-                PaymentStatus.FAILED
+                PaymentStatus.FAILED,
+                now
         );
 
-        entityManager.flush();
         entityManager.clear();
 
         PaymentEvent unchangedPayment =
@@ -163,5 +144,131 @@ class PaymentRepositoryTest {
                 PaymentStatus.PROCESSING,
                 unchangedPayment.getStatus()
         );
+    }
+
+    @Test
+    void recoverStaleProcessingPayment_whenOneStalePayment_shouldMarkItFailed() {
+        LocalDateTime now = LocalDateTime.now();
+
+        PaymentEvent payment = createPayment(
+                "PAY-TEST-STALE-001",
+                PaymentStatus.PROCESSING,
+                now.minusMinutes(4)
+        );
+
+        payment = paymentRepository.saveAndFlush(payment);
+        Long paymentId = payment.getId();
+
+        // Simulate a payment abandoned four minutes ago.
+        jdbcTemplate.update(
+                "UPDATE payment_events SET updated_at = ? WHERE id = ?",
+                now.minusMinutes(4),
+                paymentId
+        );
+
+        int staleCount = paymentRepository.recoverStaleProcessingPayments(
+                PaymentStatus.PROCESSING,
+                PaymentStatus.FAILED,
+                now.minusMinutes(3),
+                now
+        );
+
+        entityManager.clear();
+
+        PaymentEvent changedPayment =
+                paymentRepository.findById(paymentId).orElseThrow();
+
+        assertEquals(1, staleCount);
+        assertEquals(PaymentStatus.FAILED, changedPayment.getStatus());
+        assertEquals(now, changedPayment.getNextRetryAt());
+        assertEquals(
+                "Recovered stale PROCESSING payment",
+                changedPayment.getFailureReason()
+        );
+    }
+
+    @Test
+    void recoverStaleProcessingPayment_whenNoStalePayment_shouldLeaveItProcessing() {
+        LocalDateTime now = LocalDateTime.now();
+
+        PaymentEvent payment = createPayment(
+                "PAY-TEST-RECENT-001",
+                PaymentStatus.PROCESSING,
+                now.minusMinutes(2)
+        );
+
+        payment = paymentRepository.saveAndFlush(payment);
+        Long paymentId = payment.getId();
+
+        int staleCount = paymentRepository.recoverStaleProcessingPayments(
+                PaymentStatus.PROCESSING,
+                PaymentStatus.FAILED,
+                now.minusMinutes(3),
+                now
+        );
+
+        entityManager.clear();
+
+        PaymentEvent unchangedPayment =
+                paymentRepository.findById(paymentId).orElseThrow();
+
+        assertEquals(0, staleCount);
+        assertEquals(
+                PaymentStatus.PROCESSING,
+                unchangedPayment.getStatus()
+        );
+    }
+
+    @Test
+    void recoverStaleProcessingPayments_whenMultipleStalePayments_shouldRecoverAll() {
+        LocalDateTime now = LocalDateTime.now();
+
+        PaymentEvent payment1 = createPayment(
+                "PAY-TEST-MULTI-STALE-001",
+                PaymentStatus.PROCESSING,
+                now.minusMinutes(5)
+        );
+
+        PaymentEvent payment2 = createPayment(
+                "PAY-TEST-MULTI-STALE-002",
+                PaymentStatus.PROCESSING,
+                now.minusMinutes(4)
+        );
+
+        paymentRepository.saveAllAndFlush(List.of(payment1, payment2));
+
+        // Simulate both payments being abandoned four minutes ago.
+        jdbcTemplate.update(
+                "UPDATE payment_events SET updated_at = ? WHERE payment_id = ?",
+                now.minusMinutes(4),
+                payment1.getPaymentId()
+        );
+
+        jdbcTemplate.update(
+                "UPDATE payment_events SET updated_at = ? WHERE payment_id = ?",
+                now.minusMinutes(4),
+                payment2.getPaymentId()
+        );
+
+        int recoveredCount = paymentRepository.recoverStaleProcessingPayments(
+                PaymentStatus.PROCESSING,
+                PaymentStatus.FAILED,
+                now.minusMinutes(3),
+                now
+        );
+
+        entityManager.clear();
+
+        PaymentEvent recovered1 = paymentRepository
+                .findById(payment1.getId())
+                .orElseThrow();
+
+        PaymentEvent recovered2 = paymentRepository
+                .findById(payment2.getId())
+                .orElseThrow();
+
+        assertEquals(2, recoveredCount);
+        assertEquals(PaymentStatus.FAILED, recovered1.getStatus());
+        assertEquals(PaymentStatus.FAILED, recovered2.getStatus());
     }
 }
