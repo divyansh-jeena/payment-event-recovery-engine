@@ -2,6 +2,7 @@ package com.example.paymenteventrecoveryengine.repository;
 
 import com.example.paymenteventrecoveryengine.entity.PaymentEvent;
 import com.example.paymenteventrecoveryengine.enums.PaymentStatus;
+import jakarta.transaction.Transactional;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -42,17 +43,39 @@ public interface PaymentRepository
     );
     long countByStatus(PaymentStatus status);
 
+
     @Modifying
     @Query("""
     UPDATE PaymentEvent p
-    SET p.status = :processing
+    SET p.status = :processing,
+        p.updatedAt = :claimedAt
     WHERE p.id = :id
       AND p.status = :expectedStatus
-    """)
+""")
     int claimPayment(
             @Param("id") Long id,
             @Param("processing") PaymentStatus processing,
-            @Param("expectedStatus") PaymentStatus expectedStatus
+            @Param("expectedStatus") PaymentStatus expectedStatus,
+            @Param("claimedAt") LocalDateTime claimedAt
     );
+
+    @Modifying
+    @Transactional
+    @Query("""
+    UPDATE PaymentEvent p
+    SET p.status = :failed,
+        p.nextRetryAt = :now,
+        p.failureReason = 'Recovered stale PROCESSING payment',
+        p.updatedAt = :now
+    WHERE p.status = :processing
+      AND p.updatedAt < :cutoff
+""")
+    int recoverStaleProcessingPayments(
+            @Param("processing") PaymentStatus processing,
+            @Param("failed") PaymentStatus failed,
+            @Param("cutoff") LocalDateTime cutoff,
+            @Param("now") LocalDateTime now
+    );
+
 
 }

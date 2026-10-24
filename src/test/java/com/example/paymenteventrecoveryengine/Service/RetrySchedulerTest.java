@@ -1,8 +1,10 @@
+
 package com.example.paymenteventrecoveryengine.Service;
 
 import com.example.paymenteventrecoveryengine.entity.PaymentEvent;
 import com.example.paymenteventrecoveryengine.enums.PaymentStatus;
 import com.example.paymenteventrecoveryengine.repository.PaymentRepository;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -11,6 +13,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
@@ -35,6 +38,12 @@ class RetrySchedulerTest {
 
     @Test
     void retryPayments_whenNoFailedPaymentsExist() {
+        when(paymentRepository.recoverStaleProcessingPayments(
+                eq(PaymentStatus.PROCESSING),
+                eq(PaymentStatus.FAILED),
+                any(LocalDateTime.class),
+                any(LocalDateTime.class)
+        )).thenReturn(0);
 
         when(paymentRepository.findByStatusAndNextRetryAtLessThanEqual(
                 eq(PaymentStatus.FAILED),
@@ -43,17 +52,13 @@ class RetrySchedulerTest {
 
         retryScheduler.retryFailedPayments();
 
-        verify(deliveryService, never())
-                .deliver(any(PaymentEvent.class));
-
+        verify(deliveryService, never()).deliver(any(PaymentEvent.class));
         verify(paymentClaimService, never())
                 .claim(anyLong(), any(PaymentStatus.class));
     }
 
-
     @Test
     void retryPayments_whenOneFailedPaymentExists() {
-
         PaymentEvent payment = mock(PaymentEvent.class);
         when(payment.getId()).thenReturn(1L);
 
@@ -62,24 +67,20 @@ class RetrySchedulerTest {
                 any(LocalDateTime.class)
         )).thenReturn(List.of(payment));
 
-        when(paymentClaimService.claim(
-                1L,
-                PaymentStatus.FAILED
-        )).thenReturn(true);
+        when(paymentClaimService.claim(1L, PaymentStatus.FAILED))
+                .thenReturn(true);
+
+        when(paymentRepository.findById(1L))
+                .thenReturn(Optional.of(payment));
 
         retryScheduler.retryFailedPayments();
 
-        verify(paymentClaimService, times(1))
-                .claim(1L, PaymentStatus.FAILED);
-
-        verify(deliveryService, times(1))
-                .deliver(payment);
+        verify(paymentClaimService).claim(1L, PaymentStatus.FAILED);
+        verify(deliveryService).deliver(payment);
     }
-
 
     @Test
     void retryPayments_whenManyFailedPaymentsExist() {
-
         PaymentEvent payment1 = mock(PaymentEvent.class);
         PaymentEvent payment2 = mock(PaymentEvent.class);
         PaymentEvent payment3 = mock(PaymentEvent.class);
@@ -93,29 +94,29 @@ class RetrySchedulerTest {
                 any(LocalDateTime.class)
         )).thenReturn(List.of(payment1, payment2, payment3));
 
-        when(paymentClaimService.claim(
-                anyLong(),
-                eq(PaymentStatus.FAILED)
-        )).thenReturn(true);
+        when(paymentClaimService.claim(anyLong(), eq(PaymentStatus.FAILED)))
+                .thenReturn(true);
+
+        when(paymentRepository.findById(1L))
+                .thenReturn(Optional.of(payment1));
+        when(paymentRepository.findById(2L))
+                .thenReturn(Optional.of(payment2));
+        when(paymentRepository.findById(3L))
+                .thenReturn(Optional.of(payment3));
 
         retryScheduler.retryFailedPayments();
 
         verify(paymentClaimService, times(3))
                 .claim(anyLong(), eq(PaymentStatus.FAILED));
 
-        verify(deliveryService, times(3))
-                .deliver(any(PaymentEvent.class));
-
         verify(deliveryService).deliver(payment1);
         verify(deliveryService).deliver(payment2);
         verify(deliveryService).deliver(payment3);
+        verify(deliveryService, times(3)).deliver(any(PaymentEvent.class));
     }
-
-
 
     @Test
     void retryPayments_whenClaimFails_shouldNotDeliverPayment() {
-
         PaymentEvent payment = mock(PaymentEvent.class);
         when(payment.getId()).thenReturn(1L);
 
@@ -124,23 +125,18 @@ class RetrySchedulerTest {
                 any(LocalDateTime.class)
         )).thenReturn(List.of(payment));
 
-        when(paymentClaimService.claim(
-                1L,
-                PaymentStatus.FAILED
-        )).thenReturn(false);
+        when(paymentClaimService.claim(1L, PaymentStatus.FAILED))
+                .thenReturn(false);
 
         retryScheduler.retryFailedPayments();
 
-        verify(paymentClaimService, times(1))
-                .claim(1L, PaymentStatus.FAILED);
-
-        verify(deliveryService, never())
-                .deliver(any(PaymentEvent.class));
+        verify(paymentClaimService).claim(1L, PaymentStatus.FAILED);
+        verify(paymentRepository, never()).findById(1L);
+        verify(deliveryService, never()).deliver(any(PaymentEvent.class));
     }
 
     @Test
     void retryPayments_whenSomeClaimsFail_shouldDeliverOnlyClaimedPayments() {
-
         PaymentEvent payment1 = mock(PaymentEvent.class);
         PaymentEvent payment2 = mock(PaymentEvent.class);
         PaymentEvent payment3 = mock(PaymentEvent.class);
@@ -148,8 +144,6 @@ class RetrySchedulerTest {
         when(payment1.getId()).thenReturn(1L);
         when(payment2.getId()).thenReturn(2L);
         when(payment3.getId()).thenReturn(3L);
-
-
 
         when(paymentRepository.findByStatusAndNextRetryAtLessThanEqual(
                 eq(PaymentStatus.FAILED),
@@ -163,6 +157,11 @@ class RetrySchedulerTest {
         when(paymentClaimService.claim(3L, PaymentStatus.FAILED))
                 .thenReturn(false);
 
+        when(paymentRepository.findById(1L))
+                .thenReturn(Optional.of(payment1));
+        when(paymentRepository.findById(2L))
+                .thenReturn(Optional.of(payment2));
+
         retryScheduler.retryFailedPayments();
 
         verify(paymentClaimService).claim(1L, PaymentStatus.FAILED);
@@ -172,11 +171,8 @@ class RetrySchedulerTest {
         verify(deliveryService).deliver(payment1);
         verify(deliveryService).deliver(payment2);
         verify(deliveryService, never()).deliver(payment3);
-
-        verify(deliveryService, times(2))
-                .deliver(any(PaymentEvent.class));
+        verify(deliveryService, times(2)).deliver(any(PaymentEvent.class));
     }
-
 
     @Test
     void retryPayments_whenOnePaymentThrowsException_shouldContinueProcessing() {
@@ -188,12 +184,16 @@ class RetrySchedulerTest {
 
         when(paymentRepository.findByStatusAndNextRetryAtLessThanEqual(
                 eq(PaymentStatus.FAILED),
-                any(LocalDateTime.class)))
-                .thenReturn(List.of(p1, p2));
+                any(LocalDateTime.class)
+        )).thenReturn(List.of(p1, p2));
 
-        when(paymentClaimService.claim(
-                anyLong(), eq(PaymentStatus.FAILED)))
+        when(paymentClaimService.claim(anyLong(), eq(PaymentStatus.FAILED)))
                 .thenReturn(true);
+
+        when(paymentRepository.findById(1L))
+                .thenReturn(Optional.of(p1));
+        when(paymentRepository.findById(2L))
+                .thenReturn(Optional.of(p2));
 
         doThrow(new RuntimeException("Test exception"))
                 .when(deliveryService).deliver(p1);
@@ -202,5 +202,87 @@ class RetrySchedulerTest {
 
         verify(deliveryService).deliver(p1);
         verify(deliveryService).deliver(p2);
+    }
+
+
+
+    @Test
+    void retryPayments_shouldRecoverStaleProcessingPaymentsFirst() {
+        when(paymentRepository.findByStatusAndNextRetryAtLessThanEqual(
+                eq(PaymentStatus.FAILED),
+                any(LocalDateTime.class)
+        )).thenReturn(List.of());
+
+        retryScheduler.retryFailedPayments();
+
+        var order = inOrder(paymentRepository);
+
+        order.verify(paymentRepository).recoverStaleProcessingPayments(
+                eq(PaymentStatus.PROCESSING),
+                eq(PaymentStatus.FAILED),
+                any(LocalDateTime.class),
+                any(LocalDateTime.class)
+        );
+
+        order.verify(paymentRepository).findByStatusAndNextRetryAtLessThanEqual(
+                eq(PaymentStatus.FAILED),
+                any(LocalDateTime.class)
+        );
+
+        verifyNoInteractions(paymentClaimService, deliveryService);
+    }
+    @Test
+    void retryPayments_whenClaimedPaymentIsMissing_shouldNotDeliver() {
+        PaymentEvent payment = mock(PaymentEvent.class);
+        when(payment.getId()).thenReturn(1L);
+
+        when(paymentRepository.findByStatusAndNextRetryAtLessThanEqual(
+                eq(PaymentStatus.FAILED),
+                any(LocalDateTime.class)
+        )).thenReturn(List.of(payment));
+
+        when(paymentClaimService.claim(1L, PaymentStatus.FAILED))
+                .thenReturn(true);
+
+        when(paymentRepository.findById(1L))
+                .thenReturn(Optional.empty());
+
+        retryScheduler.retryFailedPayments();
+
+        verify(paymentClaimService).claim(1L, PaymentStatus.FAILED);
+        verify(paymentRepository).findById(1L);
+        verifyNoInteractions(deliveryService);
+    }
+
+
+    @Test
+    void retryPayments_whenStalePaymentsAreRecovered_shouldFindDuePayments() {
+        when(paymentRepository.recoverStaleProcessingPayments(
+                eq(PaymentStatus.PROCESSING),
+                eq(PaymentStatus.FAILED),
+                any(LocalDateTime.class),
+                any(LocalDateTime.class)
+        )).thenReturn(2);
+
+        when(paymentRepository.findByStatusAndNextRetryAtLessThanEqual(
+                eq(PaymentStatus.FAILED),
+                any(LocalDateTime.class)
+        )).thenReturn(List.of());
+
+        retryScheduler.retryFailedPayments();
+
+        verify(paymentRepository).recoverStaleProcessingPayments(
+                eq(PaymentStatus.PROCESSING),
+                eq(PaymentStatus.FAILED),
+                any(LocalDateTime.class),
+                any(LocalDateTime.class)
+        );
+
+        verify(paymentRepository).findByStatusAndNextRetryAtLessThanEqual(
+                eq(PaymentStatus.FAILED),
+                any(LocalDateTime.class)
+        );
+
+        verifyNoInteractions(paymentClaimService, deliveryService);
     }
 }

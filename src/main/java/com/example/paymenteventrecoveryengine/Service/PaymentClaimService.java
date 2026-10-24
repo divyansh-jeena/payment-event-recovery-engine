@@ -14,14 +14,17 @@ public class PaymentClaimService {
 
     private final PaymentRepository paymentRepository;
 
+
     @Transactional
     public boolean claim(Long paymentId, PaymentStatus expectedStatus) {
         int updated = paymentRepository.claimPayment(
                 paymentId,
                 PaymentStatus.PROCESSING,
-                expectedStatus
+                expectedStatus,
+                java.time.LocalDateTime.now()
         );
 
         return updated == 1;
     }
+
 }
